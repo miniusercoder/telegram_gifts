@@ -1,0 +1,13 @@
+# JetBrains
+.idea/
+*.iml
+
+*.dat
+
+# Go
+*.go.sum
+*.test
+*.out
+*.so
+*.h
+
