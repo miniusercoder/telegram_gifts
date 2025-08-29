@@ -40,6 +40,34 @@ func Init(appId C.int, appHash *C.char, sessionFile *C.char) C.int {
 	return Success
 }
 
+//export ValidateRecipient
+func ValidateRecipient(username *C.char) C.int {
+	if client == nil {
+		return ErrClientNotInitialized
+	}
+	err := client.Start()
+	if err != nil {
+		return ErrStartClient
+	}
+	defer func(client *tg.Client) {
+		_ = client.Stop()
+	}(client)
+
+	goUsername := C.GoString(username)
+
+	receiver, err := client.ResolveUsername(goUsername)
+	if err != nil {
+		return ErrResolveUsername
+	}
+
+	_, ok := receiver.(*tg.UserObj)
+	if !ok {
+		return ErrResolveUsername
+	}
+
+	return Success
+}
+
 //export SendGift
 func SendGift(username *C.char, giftID C.longlong, hideName C.int) C.int {
 	if client == nil {
