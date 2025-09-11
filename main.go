@@ -37,7 +37,61 @@ func Init(appId C.int, appHash *C.char, sessionFile *C.char) C.int {
 		return ErrCreateClient
 	}
 
+	err = client.Start()
+	if err != nil {
+		return ErrStartClient
+	}
+	defer func(client *tg.Client) {
+		_ = client.Stop()
+	}(client)
+
 	return Success
+}
+
+//export GetStarsBalance
+func GetStarsBalance() C.longlong {
+	if client == nil {
+		return ErrClientNotInitialized
+	}
+	err := client.Start()
+	if err != nil {
+		return ErrStartClient
+	}
+	defer func(client *tg.Client) {
+		_ = client.Stop()
+	}(client)
+
+	starsStatus, err := client.PaymentsGetStarsStatus(false, &tg.InputPeerSelf{})
+	if err != nil {
+		return ErrGetPaymentForm
+	}
+
+	starsStatusAmount := starsStatus.Balance.(*tg.StarsAmountObj).Amount
+
+	return C.longlong(starsStatusAmount)
+}
+
+//export GetMyUsername
+func GetMyUsername() *C.char {
+	if client == nil {
+		return C.CString("")
+	}
+	err := client.Start()
+	if err != nil {
+		return C.CString("")
+	}
+	defer func(client *tg.Client) {
+		_ = client.Stop()
+	}(client)
+
+	users, err := client.UsersGetUsers([]tg.InputUser{&tg.InputUserSelf{}})
+	if err != nil {
+		return C.CString("")
+	}
+
+	me := users[0].(*tg.UserObj).Username
+
+	return C.CString(me)
 }
 
 //export ValidateRecipient
