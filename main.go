@@ -2,6 +2,8 @@ package main
 
 import "C"
 import (
+	"fmt"
+
 	tg "github.com/amarnathcjd/gogram/telegram"
 )
 
@@ -18,27 +20,34 @@ const (
 	ErrClientNotInitialized = -6
 )
 
-//export Init
-func Init(appId C.int, appHash *C.char, sessionFile *C.char) C.int {
+func InitGo(appId int32, appHash string, sessionFile string, sessionString string) int {
 	var err error
 
-	appHashGo := C.GoString(appHash)
-	sessionFileGo := C.GoString(sessionFile)
+	device := tg.DeviceConfig{
+		DeviceModel:   "OTHСB52B-Е-EXTREME",
+		SystemVersion: "Windows 10",
+		AppVersion:    "6.1.1 x64",
+		LangCode:      "ru",
+	}
 
 	client, err = tg.NewClient(tg.ClientConfig{
-		AppID:        int32(appId),
-		AppHash:      appHashGo,
-		Session:      sessionFileGo,
-		LogLevel:     tg.LogInfo,
-		DisableCache: true,
-		NoUpdates:    true,
+		AppID:         appId,
+		AppHash:       appHash,
+		Session:       sessionFile,
+		StringSession: sessionString,
+		LogLevel:      tg.LogInfo,
+		DeviceConfig:  device,
+		DisableCache:  true,
+		NoUpdates:     true,
 	})
 	if err != nil {
+		fmt.Println("Error creating client:", err)
 		return ErrCreateClient
 	}
 
 	err = client.Start()
 	if err != nil {
+		fmt.Println("Error starting client:", err)
 		return ErrStartClient
 	}
 	defer func(client *tg.Client) {
@@ -48,13 +57,13 @@ func Init(appId C.int, appHash *C.char, sessionFile *C.char) C.int {
 	return Success
 }
 
-//export GetStarsBalance
-func GetStarsBalance() C.longlong {
+func GetStarsBalanceGo() int64 {
 	if client == nil {
 		return ErrClientNotInitialized
 	}
 	err := client.Start()
 	if err != nil {
+		fmt.Println("Error starting client:", err)
 		return ErrStartClient
 	}
 	defer func(client *tg.Client) {
@@ -63,22 +72,23 @@ func GetStarsBalance() C.longlong {
 
 	starsStatus, err := client.PaymentsGetStarsStatus(false, &tg.InputPeerSelf{})
 	if err != nil {
+		fmt.Println("Error getting stars status:", err)
 		return ErrGetPaymentForm
 	}
 
 	starsStatusAmount := starsStatus.Balance.(*tg.StarsAmountObj).Amount
 
-	return C.longlong(starsStatusAmount)
+	return starsStatusAmount
 }
 
-//export GetMyUsername
-func GetMyUsername() *C.char {
+func GetMyUsernameGo() string {
 	if client == nil {
-		return C.CString("")
+		return ""
 	}
 	err := client.Start()
 	if err != nil {
-		return C.CString("")
+		fmt.Println("Error starting client:", err)
+		return ""
 	}
 	defer func(client *tg.Client) {
 		_ = client.Stop()
@@ -86,31 +96,31 @@ func GetMyUsername() *C.char {
 
 	users, err := client.UsersGetUsers([]tg.InputUser{&tg.InputUserSelf{}})
 	if err != nil {
-		return C.CString("")
+		fmt.Println("Error getting user:", err)
+		return ""
 	}
 
 	me := users[0].(*tg.UserObj).Username
 
-	return C.CString(me)
+	return me
 }
 
-//export ValidateRecipient
-func ValidateRecipient(username *C.char) C.int {
+func ValidateRecipientGo(username string) int {
 	if client == nil {
 		return ErrClientNotInitialized
 	}
 	err := client.Start()
 	if err != nil {
+		fmt.Println("Error starting client:", err)
 		return ErrStartClient
 	}
 	defer func(client *tg.Client) {
 		_ = client.Stop()
 	}(client)
 
-	goUsername := C.GoString(username)
-
-	receiver, err := client.ResolveUsername(goUsername)
+	receiver, err := client.ResolveUsername(username)
 	if err != nil {
+		fmt.Println("Error resolving username:", err)
 		return ErrResolveUsername
 	}
 
@@ -122,23 +132,24 @@ func ValidateRecipient(username *C.char) C.int {
 	return Success
 }
 
-//export SendGift
-func SendGift(username *C.char, giftID C.longlong, hideName C.int) C.int {
+func SendGiftGo(username string, giftID int64, hideName int) int {
 	if client == nil {
 		return ErrClientNotInitialized
 	}
+	fmt.Println("Starting client...")
 	err := client.Start()
 	if err != nil {
+		fmt.Println("Error starting client:", err)
 		return ErrStartClient
 	}
 	defer func(client *tg.Client) {
 		_ = client.Stop()
 	}(client)
 
-	goUsername := C.GoString(username)
-
-	receiver, err := client.ResolveUsername(goUsername)
+	fmt.Println("Resolving username:", username)
+	receiver, err := client.ResolveUsername(username)
 	if err != nil {
+		fmt.Println("Error resolving username:", err)
 		return ErrResolveUsername
 	}
 
@@ -154,23 +165,52 @@ func SendGift(username *C.char, giftID C.longlong, hideName C.int) C.int {
 			UserID:     receiverUser.ID,
 			AccessHash: receiverUser.AccessHash,
 		},
-		GiftID:  int64(giftID),
+		GiftID:  giftID,
 		Message: nil,
 	}
 
+	fmt.Println("Getting payment form for giftID:", giftID)
 	paymentForm, err := client.PaymentsGetPaymentForm(starsInvoice, nil)
 	if err != nil {
+		fmt.Println("Error getting payment form:", err)
 		return ErrGetPaymentForm
 	}
 
 	starGiftForm := paymentForm.(*tg.PaymentsPaymentFormStarGift)
 
+	fmt.Println("Sending stars gift to:", username)
 	_, err = client.PaymentsSendStarsForm(starGiftForm.FormID, starsInvoice)
 	if err != nil {
+		fmt.Println("Error sending stars:", err)
 		return ErrSendStars
 	}
 
 	return Success
+}
+
+//export Init
+func Init(appId C.int, appHash *C.char, sessionFile *C.char) C.int {
+	return C.int(InitGo(int32(appId), C.GoString(appHash), C.GoString(sessionFile), ""))
+}
+
+//export GetStarsBalance
+func GetStarsBalance() C.longlong {
+	return C.longlong(GetStarsBalanceGo())
+}
+
+//export GetMyUsername
+func GetMyUsername() *C.char {
+	return C.CString(GetMyUsernameGo())
+}
+
+//export ValidateRecipient
+func ValidateRecipient(username *C.char) C.int {
+	return C.int(ValidateRecipientGo(C.GoString(username)))
+}
+
+//export SendGift
+func SendGift(username *C.char, giftID C.longlong, hideName C.int) C.int {
+	return C.int(SendGiftGo(C.GoString(username), int64(giftID), int(hideName)))
 }
 
 func main() {}
