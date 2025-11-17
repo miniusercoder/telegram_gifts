@@ -2,10 +2,18 @@ package main
 
 import "C"
 import (
-	"fmt"
+	"log"
+	"os"
 
 	tg "github.com/amarnathcjd/gogram/telegram"
 )
+
+func LogInit() {
+	// Время + стандартный формат
+	log.SetFlags(log.LstdFlags)
+	// Вывод в stderr
+	log.SetOutput(os.Stderr)
+}
 
 var client *tg.Client
 
@@ -41,13 +49,13 @@ func InitGo(appId int32, appHash string, sessionFile string, sessionString strin
 		NoUpdates:     true,
 	})
 	if err != nil {
-		fmt.Println("Error creating client:", err)
+		log.Println("Error creating client:", err)
 		return ErrCreateClient
 	}
 
 	err = client.Start()
 	if err != nil {
-		fmt.Println("Error starting client:", err)
+		log.Println("Error starting client:", err)
 		return ErrStartClient
 	}
 	defer func(client *tg.Client) {
@@ -63,7 +71,7 @@ func GetStarsBalanceGo() int64 {
 	}
 	err := client.Start()
 	if err != nil {
-		fmt.Println("Error starting client:", err)
+		log.Println("Error starting client:", err)
 		return ErrStartClient
 	}
 	defer func(client *tg.Client) {
@@ -72,7 +80,7 @@ func GetStarsBalanceGo() int64 {
 
 	starsStatus, err := client.PaymentsGetStarsStatus(false, &tg.InputPeerSelf{})
 	if err != nil {
-		fmt.Println("Error getting stars status:", err)
+		log.Println("Error getting stars status:", err)
 		return ErrGetPaymentForm
 	}
 
@@ -87,7 +95,7 @@ func GetMyUsernameGo() string {
 	}
 	err := client.Start()
 	if err != nil {
-		fmt.Println("Error starting client:", err)
+		log.Println("Error starting client:", err)
 		return ""
 	}
 	defer func(client *tg.Client) {
@@ -96,7 +104,7 @@ func GetMyUsernameGo() string {
 
 	users, err := client.UsersGetUsers([]tg.InputUser{&tg.InputUserSelf{}})
 	if err != nil {
-		fmt.Println("Error getting user:", err)
+		log.Println("Error getting user:", err)
 		return ""
 	}
 
@@ -111,7 +119,7 @@ func ValidateRecipientGo(username string) int {
 	}
 	err := client.Start()
 	if err != nil {
-		fmt.Println("Error starting client:", err)
+		log.Println("Error starting client:", err)
 		return ErrStartClient
 	}
 	defer func(client *tg.Client) {
@@ -120,7 +128,7 @@ func ValidateRecipientGo(username string) int {
 
 	receiver, err := client.ResolveUsername(username)
 	if err != nil {
-		fmt.Println("Error resolving username:", err)
+		log.Println("Error resolving username:", err)
 		return ErrResolveUsername
 	}
 
@@ -136,20 +144,20 @@ func SendGiftGo(username string, giftID int64, hideName int) int {
 	if client == nil {
 		return ErrClientNotInitialized
 	}
-	fmt.Println("Starting client...")
+	log.Println("Starting client...")
 	err := client.Start()
 	if err != nil {
-		fmt.Println("Error starting client:", err)
+		log.Println("Error starting client:", err)
 		return ErrStartClient
 	}
 	defer func(client *tg.Client) {
 		_ = client.Stop()
 	}(client)
 
-	fmt.Println("Resolving username:", username)
+	log.Println("Resolving username:", username)
 	receiver, err := client.ResolveUsername(username)
 	if err != nil {
-		fmt.Println("Error resolving username:", err)
+		log.Println("Error resolving username:", err)
 		return ErrResolveUsername
 	}
 
@@ -169,19 +177,19 @@ func SendGiftGo(username string, giftID int64, hideName int) int {
 		Message: nil,
 	}
 
-	fmt.Println("Getting payment form for giftID:", giftID)
+	log.Println("Getting payment form for giftID:", giftID)
 	paymentForm, err := client.PaymentsGetPaymentForm(starsInvoice, nil)
 	if err != nil {
-		fmt.Println("Error getting payment form:", err)
+		log.Println("Error getting payment form:", err)
 		return ErrGetPaymentForm
 	}
 
 	starGiftForm := paymentForm.(*tg.PaymentsPaymentFormStarGift)
 
-	fmt.Println("Sending stars gift to:", username)
+	log.Println("Sending stars gift to:", username)
 	_, err = client.PaymentsSendStarsForm(starGiftForm.FormID, starsInvoice)
 	if err != nil {
-		fmt.Println("Error sending stars:", err)
+		log.Println("Error sending stars:", err)
 		return ErrSendStars
 	}
 
@@ -190,6 +198,7 @@ func SendGiftGo(username string, giftID int64, hideName int) int {
 
 //export Init
 func Init(appId C.int, appHash *C.char, sessionFile *C.char) C.int {
+	LogInit()
 	return C.int(InitGo(int32(appId), C.GoString(appHash), C.GoString(sessionFile), ""))
 }
 
