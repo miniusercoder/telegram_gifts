@@ -17,6 +17,13 @@ RUN wget -q https://go.dev/dl/go${GOVERSION}.linux-amd64.tar.gz && \
     rm go${GOVERSION}.linux-amd64.tar.gz
 ENV PATH="/usr/local/go/bin:${PATH}"
 
+# --- Установка UPX ------------------------------------------------------------
+ARG UPXVERSION=5.0.2
+RUN wget -q https://github.com/upx/upx/releases/download/v${UPXVERSION}/upx-${UPXVERSION}-amd64_linux.tar.xz && \
+    tar -xf upx-${UPXVERSION}-amd64_linux.tar.xz && \
+    mv upx-${UPXVERSION}-amd64_linux/upx /usr/local/bin/ && \
+    rm -rf upx-${UPXVERSION}-amd64_linux*
+
 # --- Рабочая директория ------------------------------------------------------
 WORKDIR /build
 
@@ -41,4 +48,8 @@ RUN --mount=type=cache,target=/root/go/pkg/mod \
     -trimpath \
     -buildvcs=false \
     -ldflags "-s -w -buildid="
+
+# --- Сжатие бинарника --------------------------------------------------------
+RUN chmod 755 libtg.so
+RUN upx --best --lzma libtg.so
 
