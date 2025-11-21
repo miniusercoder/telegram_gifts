@@ -8,11 +8,12 @@ import (
 	tg "github.com/amarnathcjd/gogram/telegram"
 )
 
-func LogInit() {
+func LogInit(prefix string) {
 	// Время + стандартный формат
 	log.SetFlags(log.LstdFlags)
 	// Вывод в stderr
 	log.SetOutput(os.Stderr)
+	log.SetPrefix("[" + prefix + "] ")
 }
 
 var client *tg.Client
@@ -29,6 +30,8 @@ const (
 )
 
 func InitGo(appId int32, appHash string, sessionFile string, sessionString string) int {
+	LogInit(sessionFile)
+
 	var err error
 
 	device := tg.DeviceConfig{
@@ -198,7 +201,6 @@ func SendGiftGo(username string, giftID int64, hideName int) int {
 
 //export Init
 func Init(appId C.int, appHash *C.char, sessionFile *C.char) C.int {
-	LogInit()
 	return C.int(InitGo(int32(appId), C.GoString(appHash), C.GoString(sessionFile), ""))
 }
 
