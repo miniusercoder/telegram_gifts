@@ -35,9 +35,9 @@ func InitGo(appId int32, appHash string, sessionFile string, sessionString strin
 	var err error
 
 	device := tg.DeviceConfig{
-		DeviceModel:   "OTHСB52B-Е-EXTREME",
+		DeviceModel:   "OTHСB56B-Е-EXTREME",
 		SystemVersion: "Windows 10",
-		AppVersion:    "6.1.1 x64",
+		AppVersion:    "6.3.4",
 		LangCode:      "ru",
 	}
 
