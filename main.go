@@ -199,6 +199,44 @@ func SendGiftGo(username string, giftID int64, hideName int) int {
 	return Success
 }
 
+func SendMessageGo(username string, message string) int {
+	if client == nil {
+		return ErrClientNotInitialized
+	}
+	err := client.Start()
+	if err != nil {
+		log.Println("Error starting client:", err)
+		return ErrStartClient
+	}
+	defer func(client *tg.Client) {
+		_ = client.Stop()
+	}(client)
+
+	receiver, err := client.ResolveUsername(username)
+	if err != nil {
+		log.Println("Error resolving username:", err)
+		return ErrResolveUsername
+	}
+
+	receiverPeer, err := client.ResolvePeer(receiver)
+	if err != nil {
+		log.Println("Error resolving peer:", err)
+		return ErrResolveUsername
+	}
+
+	_, err = client.MessagesSendMessage(&tg.MessagesSendMessageParams{
+		Peer:     receiverPeer,
+		Message:  message,
+		RandomID: tg.GenerateRandomLong(),
+	})
+	if err != nil {
+		log.Println("Error sending message:", err)
+		return ErrSendStars
+	}
+
+	return Success
+}
+
 //export Init
 func Init(appId C.int, appHash *C.char, sessionFile *C.char) C.int {
 	return C.int(InitGo(int32(appId), C.GoString(appHash), C.GoString(sessionFile), ""))
@@ -222,6 +260,11 @@ func ValidateRecipient(username *C.char) C.int {
 //export SendGift
 func SendGift(username *C.char, giftID C.longlong, hideName C.int) C.int {
 	return C.int(SendGiftGo(C.GoString(username), int64(giftID), int(hideName)))
+}
+
+//export SendMessage
+func SendMessage(username *C.char, message *C.char) C.int {
+	return C.int(SendMessageGo(C.GoString(username), C.GoString(message)))
 }
 
 func main() {}
