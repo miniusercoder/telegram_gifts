@@ -6,6 +6,6 @@ build-libtg:
 	DOCKER_BUILDKIT=1 docker build --progress=plain -t $(IMAGE_NAME) .
 	mkdir -p $(ARTIFACTS_DIR)
 	docker create --name $(CONTAINER_NAME) $(IMAGE_NAME)
-	docker cp $(CONTAINER_NAME):/build/libtg.so $(ARTIFACTS_DIR)/
-	docker cp $(CONTAINER_NAME):/build/libtg.h $(ARTIFACTS_DIR)/
+	docker cp $(CONTAINER_NAME):/dist/libtg.so $(ARTIFACTS_DIR)/ || true
+	docker cp $(CONTAINER_NAME):/dist/libtg.h $(ARTIFACTS_DIR)/ || true
 	docker rm $(CONTAINER_NAME)
