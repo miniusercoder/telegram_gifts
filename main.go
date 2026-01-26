@@ -93,21 +93,17 @@ const (
 	ErrClientNotInitialized = -6
 )
 
-func InitGo(appId int32, appHash string, sessionFile string, sessionString string) int {
+func InitGo(appId int32, appHash string, sessionFile string, sessionString string, proxyStr string) int {
 	LogInit(sessionFile)
 
 	var err error
+	var proxy tg.Proxy
 
 	device := tg.DeviceConfig{
-		DeviceModel:   "OTHСB56B-Е-EXTREME",
+		DeviceModel:   "ZJJDH12S4-B-ULTRA",
 		SystemVersion: "Windows 10",
 		AppVersion:    "6.4.2",
 		LangCode:      "ru",
-	}
-
-	if err != nil {
-		log.Println("Error creating proxy:", err)
-		return ErrCreateClient
 	}
 
 	logger := tg.NewLogger(tg.LogInfo, tg.LoggerConfig{
@@ -127,6 +123,15 @@ func InitGo(appId int32, appHash string, sessionFile string, sessionString strin
 		Color:  true,
 	})
 
+	if proxyStr != "" {
+		proxy, err = tg.ProxyFromURL(proxyStr)
+	}
+
+	if err != nil {
+		log.Println("Error creating proxy:", err)
+		return ErrCreateClient
+	}
+
 	client, err = tg.NewClient(tg.ClientConfig{
 		AppID:         appId,
 		AppHash:       appHash,
@@ -137,6 +142,7 @@ func InitGo(appId int32, appHash string, sessionFile string, sessionString strin
 		DeviceConfig:  device,
 		DisableCache:  true,
 		NoUpdates:     true,
+		Proxy:         proxy,
 	})
 	if err != nil {
 		log.Println("Error creating client:", err)
@@ -342,7 +348,7 @@ func ValidateRecipientGo(username string) int {
 	}
 }
 
-func SendGiftGo(username string, giftID int64, hideName int) int {
+func SendGiftGo(username string, giftID int64, hideName int, comment string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -401,8 +407,11 @@ func SendGiftGo(username string, giftID int64, hideName int) int {
 				UserID:     receiverUser.ID,
 				AccessHash: receiverUser.AccessHash,
 			},
-			GiftID:  giftID,
-			Message: nil,
+			GiftID: giftID,
+			Message: &tg.TextWithEntities{
+				Text:     comment,
+				Entities: nil,
+			},
 		}
 
 		if ctx.Err() != nil {
@@ -536,8 +545,8 @@ func SendMessageGo(username string, message string) int {
 }
 
 //export Init
-func Init(appId C.int, appHash *C.char, sessionFile *C.char) C.int {
-	return C.int(InitGo(int32(appId), C.GoString(appHash), C.GoString(sessionFile), ""))
+func Init(appId C.int, appHash *C.char, sessionFile *C.char, proxy *C.char) C.int {
+	return C.int(InitGo(int32(appId), C.GoString(appHash), C.GoString(sessionFile), "", C.GoString(proxy)))
 }
 
 //export GetStarsBalance
@@ -556,8 +565,8 @@ func ValidateRecipient(username *C.char) C.int {
 }
 
 //export SendGift
-func SendGift(username *C.char, giftID C.longlong, hideName C.int) C.int {
-	return C.int(SendGiftGo(C.GoString(username), int64(giftID), int(hideName)))
+func SendGift(username *C.char, giftID C.longlong, hideName C.int, comment *C.char) C.int {
+	return C.int(SendGiftGo(C.GoString(username), int64(giftID), int(hideName), C.GoString(comment)))
 }
 
 //export SendMessage

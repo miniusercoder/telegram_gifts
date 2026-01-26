@@ -1,5 +1,5 @@
 module telegram_gifts
 
-go 1.25.4
+go 1.25.5
 
 require github.com/amarnathcjd/gogram v1.7.1
