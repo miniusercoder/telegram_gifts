@@ -1,12 +1,18 @@
 package main
 
+/*
+#include <stdlib.h>
+*/
 import "C"
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
+	"strings"
+	"sync"
+	"syscall"
 	"time"
+	"unsafe"
 
 	tg "github.com/amarnathcjd/gogram/telegram"
 )
@@ -23,15 +29,15 @@ func (f *UserLogFormatter) Format(entry *tg.LogEntry) string {
 	if f.Color {
 		switch entry.Level {
 		case tg.LogInfo:
-			levelColor = "\033[36m" // Cyan for INFO to match typical logs
+			levelColor = "\033[36m"
 		case tg.LogWarn:
-			levelColor = "\033[33m" // Yellow
+			levelColor = "\033[33m"
 		case tg.LogError:
-			levelColor = "\033[31m" // Red
+			levelColor = "\033[31m"
 		case tg.LogDebug:
-			levelColor = "\033[37m" // White
+			levelColor = "\033[37m"
 		case tg.LogTrace:
-			levelColor = "\033[35m" // Magenta
+			levelColor = "\033[35m"
 		default:
 			levelColor = "\033[37m"
 		}
@@ -48,9 +54,6 @@ func (f *UserLogFormatter) Format(entry *tg.LogEntry) string {
 
 	fullPrefix := f.Prefix
 	if entry.Prefix != "" {
-		// If entry has its own prefix, we might want to combine them or just ignore entry.Prefix if it's internal noise
-		// The user wants a specific prefix. Let's prepend ours.
-		// If entry.Prefix is just "mtproto", we want "[session] [mtproto]"
 		fullPrefix = f.Prefix + entry.Prefix
 	}
 
@@ -68,19 +71,23 @@ func (f *UserLogFormatter) Format(entry *tg.LogEntry) string {
 		levelStr = "TRACE"
 	}
 
-	// Format: 2026/01/20 22:04:50 INFO  [stars.dat] [mtproto] connecting...
 	return fmt.Sprintf("%s %s%s%s %s %s\n", timestamp, levelColor, levelStr, resetColor, fullPrefix, entry.Message)
 }
 
 func LogInit(prefix string) {
-	// Время + стандартный формат
 	log.SetFlags(log.LstdFlags)
-	// Вывод в stderr
 	log.SetOutput(os.Stderr)
 	log.SetPrefix("[" + prefix + "] ")
 }
 
 var client *tg.Client
+var clientMu sync.Mutex
+
+var sessionLockFile *os.File
+var sessionFilePath string
+var initMu sync.Mutex
+
+const HardProxyURL = ""
 
 // Коды ошибок
 const (
@@ -91,10 +98,83 @@ const (
 	ErrGetPaymentForm       = -4
 	ErrSendStars            = -5
 	ErrClientNotInitialized = -6
+	ErrSessionLocked        = -7
+	ErrBadSessionFile       = -8
 )
+
+// === КЭШ резолва username -> peer, чтобы не делать второй ResolveUsername ===
+type resolvedRecipient struct {
+	UserID     int64
+	AccessHash int64
+}
+
+var resolvedRecipients = map[string]resolvedRecipient{}
+var resolvedRecipientsMu sync.RWMutex
+
+func normalizeUsername(u string) string {
+	u = strings.TrimSpace(u)
+	u = strings.TrimPrefix(u, "@")
+	u = strings.TrimSpace(u)
+	u = strings.ToLower(u)
+	return u
+}
+
+func lockSessionFile(sessionFile string) error {
+	// Advisory lock held for lifetime of the client.
+	// Prevents concurrent processes from truncating/writing the same session file.
+	lockPath := sessionFile + ".lock"
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return err
+	}
+	sessionLockFile = f
+	sessionFilePath = sessionFile
+	return nil
+}
+
+func unlockSessionFile() {
+	if sessionLockFile == nil {
+		return
+	}
+	_ = syscall.Flock(int(sessionLockFile.Fd()), syscall.LOCK_UN)
+	_ = sessionLockFile.Close()
+	sessionLockFile = nil
+	sessionFilePath = ""
+}
 
 func InitGo(appId int32, appHash string, sessionFile string, sessionString string, proxyStr string) int {
 	LogInit(sessionFile)
+
+	initMu.Lock()
+	defer initMu.Unlock()
+
+	// Already initialized
+	if client != nil {
+		if sessionFilePath == sessionFile {
+			return Success
+		}
+		return ErrCreateClient
+	}
+
+	if err := lockSessionFile(sessionFile); err != nil {
+		log.Println("Session is locked by another process:", err)
+		unlockSessionFile()
+		return ErrSessionLocked
+	}
+
+	// Guard against corrupted/truncated session file:
+	// gogram's AES decrypt panics if ciphertext size is not a multiple of 16.
+	if info, err := os.Stat(sessionFile); err == nil {
+		if info.Size() > 0 && (info.Size()%16) != 0 {
+			log.Println("Corrupted session file (size not multiple of 16):", info.Size())
+			unlockSessionFile()
+			return ErrBadSessionFile
+		}
+	}
 
 	var err error
 	var proxy tg.Proxy
@@ -112,23 +192,24 @@ func InitGo(appId int32, appHash string, sessionFile string, sessionString strin
 		Output: os.Stderr,
 		Color:  true,
 	})
-
-	// Force the prefix again, as NewLogger might not be applying it to the top level correctly
-	// or gogram overriden it internally.
-	// But since we can't be sure about implementation, we try SetPrefix method if available.
-	// Based on my interface discovery, `SetPrefix` exists.
 	logger = logger.SetPrefix("[" + sessionFile + "] ")
 	logger = logger.SetFormatter(&UserLogFormatter{
 		Prefix: "[" + sessionFile + "] ",
 		Color:  true,
 	})
 
-	if proxyStr != "" {
-		proxy, err = tg.ProxyFromURL(proxyStr)
+	// Prefer proxy from caller; fallback to HardProxyURL.
+	proxyURL := strings.TrimSpace(proxyStr)
+	if proxyURL == "" {
+		proxyURL = HardProxyURL
+	}
+	if proxyURL != "" {
+		proxy, err = tg.ProxyFromURL(proxyURL)
 	}
 
 	if err != nil {
 		log.Println("Error creating proxy:", err)
+		unlockSessionFile()
 		return ErrCreateClient
 	}
 
@@ -143,409 +224,214 @@ func InitGo(appId int32, appHash string, sessionFile string, sessionString strin
 		DisableCache:  true,
 		NoUpdates:     true,
 		Proxy:         proxy,
+		Timeout:       20,
+		ReqTimeout:    20,
 	})
 	if err != nil {
 		log.Println("Error creating client:", err)
+		client = nil
+		unlockSessionFile()
 		return ErrCreateClient
 	}
 
-	err = client.Start()
+	err = client.Start() // интерактивно: телефон/код/2FA
 	if err != nil {
 		log.Println("Error starting client:", err)
+		_ = client.Stop()
+		client = nil
+		unlockSessionFile()
 		return ErrStartClient
 	}
-	defer func(client *tg.Client) {
-		_ = client.Stop()
-	}(client)
 
 	return Success
 }
 
 func GetStarsBalanceGo() int64 {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	if client == nil {
+		return ErrClientNotInitialized
+	}
 
-	resultCh := make(chan int64, 1)
+	clientMu.Lock()
+	defer clientMu.Unlock()
 
-	go func() {
-		if client == nil {
-			resultCh <- ErrClientNotInitialized
-			return
-		}
-
-		go func() {
-			<-ctx.Done()
-			if ctx.Err() == context.DeadlineExceeded {
-				_ = client.Stop()
-			}
-		}()
-
-		err := client.Start()
-		if err != nil {
-			if ctx.Err() == nil {
-				log.Println("Error starting client:", err)
-				resultCh <- ErrStartClient
-			}
-			return
-		}
-		defer func(client *tg.Client) {
-			_ = client.Stop()
-		}(client)
-
-		if ctx.Err() != nil {
-			return
-		}
-
-		starsStatus, err := client.PaymentsGetStarsStatus(false, &tg.InputPeerSelf{})
-		if err != nil {
-			log.Println("Error getting stars status:", err)
-			if ctx.Err() == nil {
-				resultCh <- ErrGetPaymentForm
-			}
-			return
-		}
-
-		starsStatusAmount := starsStatus.Balance.(*tg.StarsAmountObj).Amount
-		select {
-		case resultCh <- starsStatusAmount:
-		case <-ctx.Done():
-		}
-	}()
-
-	select {
-	case res := <-resultCh:
-		return res
-	case <-ctx.Done():
-		log.Println("Timeout reached inside Go wrapper")
+	starsStatus, err := client.PaymentsGetStarsStatus(false, &tg.InputPeerSelf{})
+	if err != nil {
+		log.Println("Error getting stars status:", err)
 		return ErrGetPaymentForm
 	}
+
+	return starsStatus.Balance.(*tg.StarsAmountObj).Amount
 }
 
 func GetMyUsernameGo() string {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	resultCh := make(chan string, 1)
-
-	go func() {
-		if client == nil {
-			resultCh <- ""
-			return
-		}
-
-		go func() {
-			<-ctx.Done()
-			if ctx.Err() == context.DeadlineExceeded {
-				_ = client.Stop()
-			}
-		}()
-
-		err := client.Start()
-		if err != nil {
-			if ctx.Err() == nil {
-				log.Println("Error starting client:", err)
-				resultCh <- ""
-			}
-			return
-		}
-		defer func(client *tg.Client) {
-			_ = client.Stop()
-		}(client)
-
-		if ctx.Err() != nil {
-			return
-		}
-
-		users, err := client.UsersGetUsers([]tg.InputUser{&tg.InputUserSelf{}})
-		if err != nil {
-			log.Println("Error getting user:", err)
-			if ctx.Err() == nil {
-				resultCh <- ""
-			}
-			return
-		}
-
-		me := users[0].(*tg.UserObj).Username
-		select {
-		case resultCh <- me:
-		case <-ctx.Done():
-		}
-	}()
-
-	select {
-	case res := <-resultCh:
-		return res
-	case <-ctx.Done():
-		log.Println("Timeout reached inside Go wrapper")
+	if client == nil {
 		return ""
 	}
+
+	clientMu.Lock()
+	defer clientMu.Unlock()
+
+	users, err := client.UsersGetUsers([]tg.InputUser{&tg.InputUserSelf{}})
+	if err != nil {
+		log.Println("Error getting user:", err)
+		return ""
+	}
+
+	return users[0].(*tg.UserObj).Username
 }
 
 func ValidateRecipientGo(username string) int {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	if client == nil {
+		return ErrClientNotInitialized
+	}
 
-	resultCh := make(chan int, 1)
+	clientMu.Lock()
+	defer clientMu.Unlock()
 
-	go func() {
-		if client == nil {
-			resultCh <- ErrClientNotInitialized
-			return
-		}
-
-		go func() {
-			<-ctx.Done()
-			if ctx.Err() == context.DeadlineExceeded {
-				_ = client.Stop()
-			}
-		}()
-
-		err := client.Start()
-		if err != nil {
-			if ctx.Err() == nil {
-				log.Println("Error starting client:", err)
-				resultCh <- ErrStartClient
-			}
-			return
-		}
-		defer func(client *tg.Client) {
-			_ = client.Stop()
-		}(client)
-
-		if ctx.Err() != nil {
-			return
-		}
-
-		receiver, err := client.ResolveUsername(username)
-		if err != nil {
-			log.Println("Error resolving username:", err)
-			if ctx.Err() == nil {
-				resultCh <- ErrResolveUsername
-			}
-			return
-		}
-
-		_, ok := receiver.(*tg.UserObj)
-		if !ok {
-			if ctx.Err() == nil {
-				resultCh <- ErrResolveUsername
-			}
-			return
-		}
-
-		select {
-		case resultCh <- Success:
-		case <-ctx.Done():
-		}
-	}()
-
-	select {
-	case res := <-resultCh:
-		return res
-	case <-ctx.Done():
-		log.Println("Timeout reached inside Go wrapper")
+	u := normalizeUsername(username)
+	receiver, err := client.ResolveUsername(u)
+	if err != nil {
+		log.Println("Error resolving username:", err)
 		return ErrResolveUsername
 	}
+
+	receiverUser, ok := receiver.(*tg.UserObj)
+	if !ok {
+		return ErrResolveUsername
+	}
+
+	resolvedRecipientsMu.Lock()
+	resolvedRecipients[u] = resolvedRecipient{
+		UserID:     receiverUser.ID,
+		AccessHash: receiverUser.AccessHash,
+	}
+	resolvedRecipientsMu.Unlock()
+
+	return Success
 }
 
 func SendGiftGo(username string, giftID int64, hideName int, comment string) int {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	if client == nil {
+		return ErrClientNotInitialized
+	}
 
-	resultCh := make(chan int, 1)
+	clientMu.Lock()
+	defer clientMu.Unlock()
 
-	go func() {
-		if client == nil {
-			resultCh <- ErrClientNotInitialized
-			return
-		}
+	u := normalizeUsername(username)
 
-		go func() {
-			<-ctx.Done()
-			if ctx.Err() == context.DeadlineExceeded {
-				_ = client.Stop()
-			}
-		}()
+	resolvedRecipientsMu.RLock()
+	rr, ok := resolvedRecipients[u]
+	resolvedRecipientsMu.RUnlock()
 
-		log.Println("Starting client...")
-		err := client.Start()
-		if err != nil {
-			if ctx.Err() == nil {
-				log.Println("Error starting client:", err)
-				resultCh <- ErrStartClient
-			}
-			return
-		}
-		defer func() { _ = client.Stop() }()
-
-		if ctx.Err() != nil {
-			return
-		}
-
-		log.Println("Resolving username:", username)
-		receiver, err := client.ResolveUsername(username)
+	if !ok || rr.UserID == 0 || rr.AccessHash == 0 {
+		log.Println("Resolving username (SendGift):", u)
+		receiver, err := client.ResolveUsername(u)
 		if err != nil {
 			log.Println("Error resolving username:", err)
-			if ctx.Err() == nil {
-				resultCh <- ErrResolveUsername
-			}
-			return
+			return ErrResolveUsername
 		}
-
-		receiverUser, ok := receiver.(*tg.UserObj)
-		if !ok {
-			if ctx.Err() == nil {
-				resultCh <- ErrResolveUsername
-			}
-			return
+		receiverUser, ok2 := receiver.(*tg.UserObj)
+		if !ok2 {
+			return ErrResolveUsername
 		}
+		rr = resolvedRecipient{UserID: receiverUser.ID, AccessHash: receiverUser.AccessHash}
+		resolvedRecipientsMu.Lock()
+		resolvedRecipients[u] = rr
+		resolvedRecipientsMu.Unlock()
+	}
 
-		starsInvoice := &tg.InputInvoiceStarGift{
-			HideName:       hideName != 0,
-			IncludeUpgrade: false,
-			Peer: &tg.InputPeerUser{
-				UserID:     receiverUser.ID,
-				AccessHash: receiverUser.AccessHash,
-			},
-			GiftID: giftID,
-			Message: &tg.TextWithEntities{
-				Text:     comment,
-				Entities: nil,
-			},
-		}
+	starsInvoice := &tg.InputInvoiceStarGift{
+		HideName:       hideName != 0,
+		IncludeUpgrade: false,
+		Peer: &tg.InputPeerUser{
+			UserID:     rr.UserID,
+			AccessHash: rr.AccessHash,
+		},
+		GiftID: giftID,
+		Message: &tg.TextWithEntities{
+			Text:     comment,
+			Entities: nil,
+		},
+	}
 
-		if ctx.Err() != nil {
-			return
-		}
+	log.Println("Getting payment form for giftID:", giftID)
+	paymentForm, err := client.PaymentsGetPaymentForm(starsInvoice, nil)
+	if err != nil {
+		log.Println("Error getting payment form:", err)
+		return ErrGetPaymentForm
+	}
 
-		log.Println("Getting payment form for giftID:", giftID)
-		paymentForm, err := client.PaymentsGetPaymentForm(starsInvoice, nil)
-		if err != nil {
-			log.Println("Error getting payment form:", err)
-			if ctx.Err() == nil {
-				resultCh <- ErrGetPaymentForm
-			}
-			return
-		}
+	starGiftForm := paymentForm.(*tg.PaymentsPaymentFormStarGift)
 
-		starGiftForm := paymentForm.(*tg.PaymentsPaymentFormStarGift)
-
-		if ctx.Err() != nil {
-			return
-		}
-
-		log.Println("Sending stars gift to:", username)
-		_, err = client.PaymentsSendStarsForm(starGiftForm.FormID, starsInvoice)
-		if err != nil {
-			log.Println("Error sending stars:", err)
-			if ctx.Err() == nil {
-				resultCh <- ErrSendStars
-			}
-			return
-		}
-
-		select {
-		case resultCh <- Success:
-		case <-ctx.Done():
-		}
-	}()
-
-	select {
-	case res := <-resultCh:
-		return res
-	case <-ctx.Done():
-		log.Println("Timeout reached inside Go wrapper")
+	log.Println("Sending stars gift to:", u)
+	_, err = client.PaymentsSendStarsForm(starGiftForm.FormID, starsInvoice)
+	if err != nil {
+		log.Println("Error sending stars:", err)
 		return ErrSendStars
 	}
+
+	return Success
 }
 
 func SendMessageGo(username string, message string) int {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	if client == nil {
+		return ErrClientNotInitialized
+	}
 
-	resultCh := make(chan int, 1)
+	clientMu.Lock()
+	defer clientMu.Unlock()
 
-	go func() {
-		if client == nil {
-			resultCh <- ErrClientNotInitialized
-			return
-		}
+	u := normalizeUsername(username)
+	receiver, err := client.ResolveUsername(u)
+	if err != nil {
+		log.Println("Error resolving username:", err)
+		return ErrResolveUsername
+	}
 
-		go func() {
-			<-ctx.Done()
-			if ctx.Err() == context.DeadlineExceeded {
-				_ = client.Stop()
-			}
-		}()
+	receiverPeer, err := client.ResolvePeer(receiver)
+	if err != nil {
+		log.Println("Error resolving peer:", err)
+		return ErrResolveUsername
+	}
 
-		err := client.Start()
-		if err != nil {
-			if ctx.Err() == nil {
-				log.Println("Error starting client:", err)
-				resultCh <- ErrStartClient
-			}
-			return
-		}
-		defer func() {
-			_ = client.Stop()
-		}()
-
-		if ctx.Err() != nil {
-			return
-		}
-
-		receiver, err := client.ResolveUsername(username)
-		if err != nil {
-			log.Println("Error resolving username:", err)
-			if ctx.Err() == nil {
-				resultCh <- ErrResolveUsername
-			}
-			return
-		}
-
-		receiverPeer, err := client.ResolvePeer(receiver)
-		if err != nil {
-			log.Println("Error resolving peer:", err)
-			if ctx.Err() == nil {
-				resultCh <- ErrResolveUsername
-			}
-			return
-		}
-
-		if ctx.Err() != nil {
-			return
-		}
-
-		_, err = client.MessagesSendMessage(&tg.MessagesSendMessageParams{
-			Peer:     receiverPeer,
-			Message:  message,
-			RandomID: tg.GenerateRandomLong(),
-		})
-		if err != nil {
-			log.Println("Error sending message:", err)
-			if ctx.Err() == nil {
-				resultCh <- ErrSendStars
-			}
-			return
-		}
-
-		select {
-		case resultCh <- Success:
-		case <-ctx.Done():
-		}
-	}()
-
-	select {
-	case res := <-resultCh:
-		return res
-	case <-ctx.Done():
-		log.Println("Timeout reached inside Go wrapper")
+	_, err = client.MessagesSendMessage(&tg.MessagesSendMessageParams{
+		Peer:     receiverPeer,
+		Message:  message,
+		RandomID: tg.GenerateRandomLong(),
+	})
+	if err != nil {
+		log.Println("Error sending message:", err)
 		return ErrSendStars
 	}
+
+	return Success
+}
+
+func CloseGo() int {
+	initMu.Lock()
+	defer initMu.Unlock()
+
+	if client == nil {
+		unlockSessionFile()
+		return Success
+	}
+
+	clientMu.Lock()
+	defer clientMu.Unlock()
+
+	_ = client.Stop()
+	client = nil
+	resolvedRecipientsMu.Lock()
+	resolvedRecipients = map[string]resolvedRecipient{}
+	resolvedRecipientsMu.Unlock()
+	unlockSessionFile()
+	return Success
 }
 
 //export Init
 func Init(appId C.int, appHash *C.char, sessionFile *C.char, proxy *C.char) C.int {
+	// proxy аргумент игнорируется, если HardProxyURL задан.
 	return C.int(InitGo(int32(appId), C.GoString(appHash), C.GoString(sessionFile), "", C.GoString(proxy)))
 }
 
@@ -557,6 +443,11 @@ func GetStarsBalance() C.longlong {
 //export GetMyUsername
 func GetMyUsername() *C.char {
 	return C.CString(GetMyUsernameGo())
+}
+
+//export FreeCString
+func FreeCString(ptr *C.char) {
+	C.free(unsafe.Pointer(ptr))
 }
 
 //export ValidateRecipient
@@ -572,6 +463,11 @@ func SendGift(username *C.char, giftID C.longlong, hideName C.int, comment *C.ch
 //export SendMessage
 func SendMessage(username *C.char, message *C.char) C.int {
 	return C.int(SendMessageGo(C.GoString(username), C.GoString(message)))
+}
+
+//export Close
+func Close() C.int {
+	return C.int(CloseGo())
 }
 
 func main() {}

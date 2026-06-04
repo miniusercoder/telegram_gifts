@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # --- Builder Stage -----------------------------------------------------------
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:20.04 AS builder
 
 # --- Установка зависимостей ---------------------------------------------------
 RUN apt-get update && \
@@ -12,7 +12,7 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Установка Go ------------------------------------------------------------
-ARG GOVERSION=1.25.6
+ARG GOVERSION=1.26.4
 RUN wget -q https://go.dev/dl/go${GOVERSION}.linux-amd64.tar.gz && \
     tar -C /usr/local -xzf go${GOVERSION}.linux-amd64.tar.gz && \
     rm go${GOVERSION}.linux-amd64.tar.gz
