@@ -12,7 +12,7 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Установка Go ------------------------------------------------------------
-ARG GOVERSION=1.26.4
+ARG GOVERSION=1.27.3
 RUN wget -q https://go.dev/dl/go${GOVERSION}.linux-amd64.tar.gz && \
     tar -C /usr/local -xzf go${GOVERSION}.linux-amd64.tar.gz && \
     rm go${GOVERSION}.linux-amd64.tar.gz

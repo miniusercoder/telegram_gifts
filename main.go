@@ -204,6 +204,7 @@ func InitGo(appId int32, appHash string, sessionFile string, sessionString strin
 		proxyURL = HardProxyURL
 	}
 	if proxyURL != "" {
+		fmt.Println("Using proxy:", proxyURL)
 		proxy, err = tg.ProxyFromURL(proxyURL)
 	}
 
