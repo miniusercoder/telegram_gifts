@@ -227,6 +227,8 @@ func InitGo(appId int32, appHash string, sessionFile string, sessionString strin
 		Proxy:         proxy,
 		Timeout:       20,
 		ReqTimeout:    20,
+		// Surface FLOOD_WAIT immediately; the caller owns retries and cooldown.
+		FloodHandler: func(err error) bool { return false },
 	})
 	if err != nil {
 		log.Println("Error creating client:", err)
@@ -288,12 +290,15 @@ func ValidateRecipientGo(username string) int {
 
 	clientMu.Lock()
 	defer clientMu.Unlock()
+	if code := activeFloodCode(); code != Success {
+		return code
+	}
 
 	u := normalizeUsername(username)
 	receiver, err := client.ResolveUsername(u)
 	if err != nil {
 		log.Println("Error resolving username:", err)
-		return ErrResolveUsername
+		return preSendErrorCode(err, ErrResolveUsername)
 	}
 
 	receiverUser, ok := receiver.(*tg.UserObj)
@@ -318,6 +323,9 @@ func SendGiftGo(username string, giftID int64, hideName int, comment string) int
 
 	clientMu.Lock()
 	defer clientMu.Unlock()
+	if code := activeFloodCode(); code != Success {
+		return code
+	}
 
 	u := normalizeUsername(username)
 
@@ -330,7 +338,7 @@ func SendGiftGo(username string, giftID int64, hideName int, comment string) int
 		receiver, err := client.ResolveUsername(u)
 		if err != nil {
 			log.Println("Error resolving username:", err)
-			return ErrResolveUsername
+			return preSendErrorCode(err, ErrResolveUsername)
 		}
 		receiverUser, ok2 := receiver.(*tg.UserObj)
 		if !ok2 {
@@ -360,7 +368,7 @@ func SendGiftGo(username string, giftID int64, hideName int, comment string) int
 	paymentForm, err := client.PaymentsGetPaymentForm(starsInvoice, nil)
 	if err != nil {
 		log.Println("Error getting payment form:", err)
-		return ErrGetPaymentForm
+		return preSendErrorCode(err, ErrGetPaymentForm)
 	}
 
 	starGiftForm := paymentForm.(*tg.PaymentsPaymentFormStarGift)
