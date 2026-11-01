@@ -166,17 +166,13 @@ func InitGo(appId int32, appHash string, sessionFile string, sessionString strin
 		return ErrSessionLocked
 	}
 
-	// Guard against corrupted/truncated session file:
-	// gogram's AES decrypt panics if ciphertext size is not a multiple of 16.
-	if info, err := os.Stat(sessionFile); err == nil {
-		if info.Size() > 0 && (info.Size()%16) != 0 {
-			log.Println("Corrupted session file (size not multiple of 16):", info.Size())
+	sdkSessionFile, sdkSessionString, err := sessionInput(sessionFile, sessionString)
+	if err != nil {
+		log.Println("Invalid session input")
 			unlockSessionFile()
 			return ErrBadSessionFile
-		}
 	}
 
-	var err error
 	var proxy tg.Proxy
 
 	device := tg.DeviceConfig{
@@ -217,8 +213,9 @@ func InitGo(appId int32, appHash string, sessionFile string, sessionString strin
 	client, err = tg.NewClient(tg.ClientConfig{
 		AppID:         appId,
 		AppHash:       appHash,
-		Session:       sessionFile,
-		StringSession: sessionString,
+		Session:       sdkSessionFile,
+		StringSession: sdkSessionString,
+		MemorySession: sdkSessionString != "",
 		LogLevel:      tg.LogInfo,
 		Logger:        logger,
 		DeviceConfig:  device,
